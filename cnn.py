@@ -10,6 +10,8 @@ import cv2
 
 from sklearn.metrics import confusion_matrix
 from datetime import timedelta
+os.environ['TF_CPP_MIN_LOG_LEVEL']='2'
+
 
 # Convolutional Layer 1.
 filter_size1 = 3
@@ -33,11 +35,11 @@ img_shape = (img_size, img_size)
 # class info
 classes = sorted(os.listdir('data/256_ObjectCategories'))
 classes.remove('257.clutter')
-#print
+print
 classes
 num_classes = len(classes)
 # batch size
-batch_size = 16
+batch_size = 32
 # validation split
 validation_size = .16
 
@@ -95,7 +97,6 @@ plot_images(images=images, cls_true=cls_true)
 
 
 # ## TensorFlow Graph
-#从截断的正态分布中输出随机值
 def new_weights(shape):
     return tf.Variable(tf.truncated_normal(shape, stddev=0.05))
 
@@ -103,6 +104,13 @@ def new_weights(shape):
 def new_biases(length):
     return tf.Variable(tf.constant(0.05, shape=[length]))
 
+def dropout(x, keepPro=0.5):
+    return tf.nn.dropout(x, keepPro)
+
+def LRN(x, R, alpha, beta, name = None, bias = 1.0):
+    """LRN"""
+    return tf.nn.local_response_normalization(x, depth_radius = R, alpha = alpha,
+                                              beta = beta, bias = bias, name = name)
 
 def new_conv_layer(input,  # The previous layer.
                    num_input_channels,  # Num. channels in prev. layer.
@@ -121,7 +129,7 @@ def new_conv_layer(input,  # The previous layer.
     biases = new_biases(length=num_filters)
 
     # Create the TensorFlow operation for convolution.
-    # Note the strides卷积步长strides are set to 1 in all dimensions.
+    # Note the strides are set to 1 in all dimensions.
     # The first and last stride must always be 1,
     # because the first is for the image-number and
     # the last is for the input-channel.
@@ -129,17 +137,6 @@ def new_conv_layer(input,  # The previous layer.
     # is moved 2 pixels across the x- and y-axis of the image.
     # The padding is set to 'SAME' which means the input image
     # is padded with zeroes so the size of the output is the same.
-    '''第一个参数input：指需要做卷积的输入图像，它要求是一个Tensor，
-    具有[batch, in_height, in_width, in_channels]这样的shape，
-    具体含义是[训练时一个batch的图片数量, 图片高度, 图片宽度, 图像通道数]，
-    注意这是一个4维的Tensor，要求类型为float32和float64其中之一'''
-    '''第二个参数filter：相当于CNN中的卷积核，它要求是一个Tensor，
-    具有[filter_height, filter_width, in_channels, out_channels]这样的shape，
-    具体含义是[卷积核的高度，卷积核的宽度，图像通道数，卷积核个数]，要求类型与参数input相同，
-    有一个地方需要注意，第三维in_channels，就是参数input的第四维'''
-    '''第三个参数strides：卷积时在图像每一维的步长，这是一个一维的向量，长度4
-    其规定前后必须为1，可以改的是中间两个数，中间两个数分别代表了水平滑动和垂直滑动步长值'''
-
     layer = tf.nn.conv2d(input=input,
                          filter=weights,
                          strides=[1, 1, 1, 1],
@@ -148,19 +145,11 @@ def new_conv_layer(input,  # The previous layer.
     # Add the biases to the results of the convolution.
     # A bias-value is added to each filter-channel.
     layer += biases
-
     # Use pooling to down-sample the image resolution?
     if use_pooling:
         # This is 2x2 max-pooling, which means that we
         # consider 2x2 windows and select the largest value
         # in each window. Then we move 2 pixels to the next window.
-        '''第一个参数value：需要池化的输入，一般池化层接在卷积层后面，
-            所以输入通常是feature map，依然是[batch, height, width, channels]这样的shape'''
-        '''第二个参数ksize：池化窗口的大小，取一个四维向量，一般是[1, height, width, 1]，
-        因为我们不想在batch和channels上做池化，所以这两个维度设为了1'''
-        '''第三个参数strides：和卷积类似，窗口在每一个维度上滑动的步长，一般也是[1, stride,stride, 1]
-            第四个参数padding：和卷积类似，可以取'VALID' 或者'SAME'
-            返一个Tensor，类型不变，shape仍然是[batch, height, width, channels]这种形式'''
         layer = tf.nn.max_pool(value=layer,
                                ksize=[1, 2, 2, 1],
                                strides=[1, 2, 2, 1],
@@ -170,9 +159,6 @@ def new_conv_layer(input,  # The previous layer.
     # It calculates max(x, 0) for each input pixel x.
     # This adds some non-linearity to the formula and allows us
     # to learn more complicated functions.
-
-    ''' tf.nn.relu(features, name = None)
-     这个函数的作用是计算激活函数 relu，即 max(features, 0)。即将矩阵中每行的非最大值置0。'''
     layer = tf.nn.relu(layer)
 
     # Note that ReLU is normally executed before the pooling,
@@ -190,7 +176,7 @@ def flatten_layer(layer):
     layer_shape = layer.get_shape()
 
     # The shape of the input layer is assumed to be:
-    '''layer_shape == [num_images, img_height, img_width, num_channels]'''
+    # layer_shape == [num_images, img_height, img_width, num_channels]
 
     # The number of features is: img_height * img_width * num_channels
     # We can use a function from TensorFlow to calculate this.
@@ -230,12 +216,11 @@ def new_fc_layer(input,  # The previous layer.
 
     return layer
 
-#tf.argmax返回最大的那个数值所在的下标
+
 x = tf.placeholder(tf.float32, shape=[None, img_size_flat], name='x')
 x_image = tf.reshape(x, [-1, img_size, img_size, num_channels])
 y_true = tf.placeholder(tf.float32, shape=[None, num_classes], name='y_true')
 y_true_cls = tf.argmax(y_true, dimension=1)
-
 # ### Convolutional Layer 1
 layer_conv1, weights_conv1 = new_conv_layer(input=x_image,
                                             num_input_channels=num_channels,
@@ -260,15 +245,18 @@ print(layer_conv3)
 layer_flat, num_features = flatten_layer(layer_conv3)
 print(layer_flat)
 print(num_features)
-
 # ### Fully-Connected Layer 1
 layer_fc1 = new_fc_layer(input=layer_flat,
                          num_inputs=num_features,
                          num_outputs=fc_size,
                          use_relu=True)
-print(layer_fc1)
+print('layer_fc1',layer_fc1)
+
+
+dropout1 = dropout(layer_fc1, keepPro=0.5)
+
 # ### Fully-Connected Layer 2
-layer_fc2 = new_fc_layer(input=layer_fc1,
+layer_fc2 = new_fc_layer(input=dropout1,
                          num_inputs=fc_size,
                          num_outputs=num_classes,
                          use_relu=False)
@@ -279,10 +267,6 @@ y_pred = tf.nn.softmax(layer_fc2)
 y_pred_cls = tf.argmax(y_pred, dimension=1)
 
 # ### Cost-function to be optimized
-'''tf.nn.softmax_cross_entropy_with_logits(_sentinel=None,labels=None, logits=None,dim=-1,name=None)
-    计算labels和logits之间的交叉熵（cross entropy）
-    label是分类的概率，比如说[0.2,0.3,0.5]，labels的每一行必须是一个概率分布
-    logits是作为softmax的输入。经过softmax的加工，就变成“归一化”的概率'''
 cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=layer_fc2,
                                                         labels=y_true)
 cost = tf.reduce_mean(cross_entropy)
@@ -291,10 +275,6 @@ cost = tf.reduce_mean(cross_entropy)
 optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(cost)
 
 # ### Performance Measures
-'''cast(x,dtype，name=None)
-将x的数据格式转化成dtype'''
-
-#tf.equal(A, B)是对比这两个矩阵或者向量的相等的元素，如果是相等的那就返回True，反正返回False，返回的值的矩阵维度和A是一样的
 correct_prediction = tf.equal(y_pred_cls, y_true_cls)
 accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
@@ -302,7 +282,6 @@ accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 session = tf.Session()
 session.run(tf.initialize_all_variables())
 
-#batch_size = 16
 train_batch_size = batch_size
 
 
@@ -483,7 +462,7 @@ def print_validation_accuracy(show_example_errors=False,
         plot_confusion_matrix(cls_pred=cls_pred)
 
 
-optimize(num_iterations=10)  # We performed 1000 iterations above.
+optimize(num_iterations=50000)  # We performed 1000 iterations above.
 print_validation_accuracy(show_example_errors=True, show_confusion_matrix=False)
 
 session.close()
